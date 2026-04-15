@@ -6858,6 +6858,8 @@ class GatewayRunner:
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 parent_session_id=parent_session_id,
+                repo_root=current_entry.repo_root,
+                repo_name=current_entry.repo_name,
             )
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)

@@ -977,6 +977,8 @@ class SessionStore:
         """
         db_end_session_id = None
         new_entry = None
+        repo_root = None
+        repo_name = None
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -992,6 +994,16 @@ class SessionStore:
 
             db_end_session_id = old_entry.session_id
 
+            if self._db:
+                try:
+                    repo_info = self._db.get_session_repo(target_session_id)
+                except Exception as e:
+                    logger.debug("Session DB get_session_repo failed: %s", e)
+                    repo_info = None
+                if repo_info:
+                    repo_root = repo_info.get("repo_root")
+                    repo_name = repo_info.get("repo_name")
+
             now = _now()
             new_entry = SessionEntry(
                 session_key=session_key,
@@ -1002,6 +1014,8 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                repo_root=repo_root,
+                repo_name=repo_name,
             )
 
             self._entries[session_key] = new_entry

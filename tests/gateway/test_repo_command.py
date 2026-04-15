@@ -1,8 +1,7 @@
 """Tests for /repo gateway command and repo-pinned status output."""
 
 from datetime import datetime
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -124,3 +123,32 @@ async def test_status_command_includes_repo_pin():
     runner._session_db.get_session_title.return_value = None
     result = await GatewayRunner._handle_status_command(runner, _make_event("/status"))
     assert "**Repo:** `project` — `/tmp/project`" in result
+
+
+@pytest.mark.asyncio
+async def test_branch_inherits_repo_pin_to_new_session():
+    from gateway.run import GatewayRunner
+
+    entry = _make_session_entry()
+    entry.repo_root = "/tmp/project"
+    entry.repo_name = "project"
+
+    session_db = MagicMock()
+    session_db.get_session_title.return_value = "Current Work"
+    session_db.get_next_title_in_lineage.return_value = "Current Work #2"
+
+    runner = _make_runner(session_entry=entry, session_db=session_db)
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    runner.session_store.switch_session.return_value = entry
+    runner._session_key_for_source = MagicMock(return_value=entry.session_key)
+
+    result = await GatewayRunner._handle_branch_command(runner, _make_event("/branch"))
+
+    assert "Branched to" in result
+    session_db.create_session.assert_called_once()
+    kwargs = session_db.create_session.call_args.kwargs
+    assert kwargs["repo_root"] == "/tmp/project"
+    assert kwargs["repo_name"] == "project"
