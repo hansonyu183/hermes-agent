@@ -75,12 +75,12 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 
 
 def _resolve_path(filepath: str) -> Path:
-    """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
-    instead of the main repository root.
-    """
+    """Resolve a path relative to the task-local session cwd when available."""
     p = Path(filepath).expanduser()
     if not p.is_absolute():
-        base = os.environ.get("TERMINAL_CWD", os.getcwd())
+        from gateway.session_context import get_session_cwd
+
+        base = get_session_cwd(os.getcwd())
         p = Path(base) / p
     return p.resolve()
 

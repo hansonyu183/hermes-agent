@@ -103,3 +103,18 @@ def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")
     assert terminal_tool._validate_workdir("C:\\Users\\Alice\\project\nwhoami")
+
+
+def test_get_env_config_prefers_session_cwd_for_docker_mount(monkeypatch, tmp_path):
+    session_dir = tmp_path / "session-project"
+    session_dir.mkdir()
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+    monkeypatch.setenv("TERMINAL_CWD", "/tmp/global-project")
+    monkeypatch.setattr("gateway.session_context.get_session_cwd", lambda default='': str(session_dir))
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "/workspace"
+    assert config["host_cwd"] == str(session_dir)
