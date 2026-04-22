@@ -180,6 +180,32 @@ class TestResolveChannelPrompts:
         adapter.config.extra = {"channel_prompts": {"100": "   "}}
         assert adapter._resolve_channel_prompt("100") is None
 
+    def test_match_channel_cwd_by_channel_id(self):
+        adapter = _make_adapter()
+        adapter.config.extra = {"channel_cwds": {"100": "/tmp/project-a"}}
+        assert adapter._resolve_channel_cwd("100") == "/tmp/project-a"
+
+    def test_match_channel_cwd_by_parent_id(self):
+        adapter = _make_adapter()
+        adapter.config.extra = {"channel_cwds": {"200": "/tmp/project-parent"}}
+        assert adapter._resolve_channel_cwd("999", parent_id="200") == "/tmp/project-parent"
+
+    def test_build_message_event_sets_channel_cwd(self):
+        adapter = _make_adapter()
+        adapter.config.extra = {"channel_cwds": {"321": "/tmp/command-project"}}
+        adapter.build_source = MagicMock(return_value=SimpleNamespace())
+
+        interaction = SimpleNamespace(
+            channel_id=321,
+            channel=SimpleNamespace(name="general", guild=None, parent_id=None),
+            user=SimpleNamespace(id=1, display_name="Brenner"),
+        )
+        adapter._get_effective_topic = MagicMock(return_value=None)
+
+        event = adapter._build_slash_event(interaction, "/retry")
+
+        assert event.channel_cwd == "/tmp/command-project"
+
 
 @pytest.mark.asyncio
 async def test_retry_preserves_channel_prompt(monkeypatch):

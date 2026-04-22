@@ -824,6 +824,10 @@ class MessageEvent:
     # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
+
+    # Per-channel working directory override (e.g. Discord/Mattermost channel_cwds).
+    # Applied at tool/runtime resolution time and never persisted to transcript history.
+    channel_cwd: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
@@ -952,6 +956,22 @@ _RETRYABLE_ERROR_PATTERNS = (
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
 
 
+_CHANNEL_CWD_DB = None
+
+
+def _get_channel_cwd_db():
+    global _CHANNEL_CWD_DB
+    if _CHANNEL_CWD_DB is not None:
+        return _CHANNEL_CWD_DB
+    try:
+        from hermes_state import SessionDB
+
+        _CHANNEL_CWD_DB = SessionDB()
+    except Exception:
+        _CHANNEL_CWD_DB = None
+    return _CHANNEL_CWD_DB
+
+
 def resolve_channel_prompt(
     config_extra: dict,
     channel_id: str,
@@ -979,6 +999,61 @@ def resolve_channel_prompt(
         prompt = str(prompt).strip()
         if prompt:
             return prompt
+    return None
+
+
+def resolve_channel_cwd(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+    *,
+    platform: str | None = None,
+) -> str | None:
+    """Resolve a per-channel working directory from runtime state or platform config."""
+    if platform:
+        db = _get_channel_cwd_db()
+        if db is not None:
+            runtime_candidates: list[tuple[str, str | None]] = []
+            if channel_id and parent_id:
+                runtime_candidates.append((str(channel_id), str(parent_id)))
+            if channel_id:
+                runtime_candidates.append((str(channel_id), None))
+                runtime_candidates.append((str(channel_id), str(channel_id)))
+            if parent_id and channel_id:
+                runtime_candidates.append((str(parent_id), str(channel_id)))
+            if parent_id:
+                runtime_candidates.append((str(parent_id), None))
+
+            seen_candidates: set[tuple[str, str | None]] = set()
+            for runtime_chat_id, runtime_thread_id in runtime_candidates:
+                candidate = (runtime_chat_id, runtime_thread_id)
+                if candidate in seen_candidates:
+                    continue
+                seen_candidates.add(candidate)
+                try:
+                    runtime_cwd = db.resolve_channel_cwd(
+                        str(platform),
+                        runtime_chat_id,
+                        thread_id=runtime_thread_id,
+                    )
+                except Exception:
+                    runtime_cwd = None
+                if runtime_cwd:
+                    return str(runtime_cwd).strip() or None
+
+    channel_cwds = config_extra.get("channel_cwds") or {}
+    if not isinstance(channel_cwds, dict):
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        cwd = channel_cwds.get(key)
+        if cwd is None:
+            continue
+        cwd = str(cwd).strip()
+        if cwd:
+            return cwd
     return None
 
 
@@ -1543,15 +1618,16 @@ class BasePlatformAdapter(ABC):
     async def _keep_typing(
         self,
         chat_id: str,
-        interval: float = 2.0,
+        interval: float = 4.0,
         metadata=None,
         stop_event: asyncio.Event | None = None,
     ) -> None:
         """
         Continuously send typing indicator until cancelled.
         
-        Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
-        to recover quickly after progress messages interrupt it.
+        Telegram/Discord typing status expires after ~5 seconds, so we refresh at a
+        lower 4-second cadence to reduce noise while still keeping long-running turns
+        visibly active.
         
         Skips send_typing when the chat is in ``_typing_paused`` (e.g. while
         the agent is waiting for dangerous-command approval).  This is critical
@@ -2068,7 +2144,7 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
-                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    _thread_meta = self._resolve_outbound_thread_metadata(event)
                     response = await self._message_handler(event)
                     if response:
                         await self._send_with_retry(
@@ -2130,6 +2206,26 @@ class BasePlatformAdapter(ABC):
         if mode == "natural":
             min_ms, max_ms = 800, 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
+
+    def _resolve_outbound_thread_metadata(
+        self,
+        event: MessageEvent,
+    ) -> Optional[Dict[str, str]]:
+        """Resolve thread metadata for outbound sends tied to an inbound event.
+
+        Slack DMs and Mattermost channel posts need a fallback to the inbound
+        message id so the first typing indicator / progress message / final
+        reply binds to the newly-created thread. Telegram must not receive that
+        fallback because its thread ids are forum-topic identifiers, not message
+        ids.
+        """
+        thread_id = event.source.thread_id
+        if not thread_id:
+            if event.source.platform == Platform.SLACK and event.source.chat_type == "dm":
+                thread_id = event.message_id
+            elif event.source.platform == Platform.MATTERMOST and event.source.chat_type != "dm":
+                thread_id = event.message_id
+        return {"thread_id": thread_id} if thread_id else None
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""

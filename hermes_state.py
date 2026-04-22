@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -95,6 +95,19 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS channel_cwds (
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL DEFAULT '',
+    cwd TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    updated_by TEXT,
+    PRIMARY KEY (platform, chat_id, thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_cwds_lookup
+ON channel_cwds(platform, chat_id, thread_id);
 """
 
 FTS_SQL = """
@@ -356,6 +369,27 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 8")
+            if current_version < 9:
+                # v9: persist per-channel/thread gateway cwd bindings.
+                try:
+                    cursor.execute(
+                        """CREATE TABLE IF NOT EXISTS channel_cwds (
+                        platform TEXT NOT NULL,
+                        chat_id TEXT NOT NULL,
+                        thread_id TEXT NOT NULL DEFAULT '',
+                        cwd TEXT NOT NULL,
+                        updated_at REAL NOT NULL,
+                        updated_by TEXT,
+                        PRIMARY KEY (platform, chat_id, thread_id)
+                    )"""
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_channel_cwds_lookup "
+                        "ON channel_cwds(platform, chat_id, thread_id)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                cursor.execute("UPDATE schema_version SET version = 9")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1442,6 +1476,104 @@ class SessionDB:
             return cursor.fetchone()[0]
 
     # =========================================================================
+    # Channel cwd bindings
+    # =========================================================================
+
+    def set_channel_cwd(
+        self,
+        platform: str,
+        chat_id: str,
+        cwd: str,
+        *,
+        thread_id: str | None = None,
+        updated_by: str | None = None,
+    ) -> None:
+        """Create or update a channel/thread cwd binding."""
+        platform = str(platform).strip().lower()
+        chat_id = str(chat_id).strip()
+        cwd = str(cwd).strip()
+        thread_value = str(thread_id).strip() if thread_id is not None and str(thread_id).strip() else ""
+        updated_by = str(updated_by).strip() if updated_by is not None and str(updated_by).strip() else None
+
+        if not platform:
+            raise ValueError("platform is required")
+        if not chat_id:
+            raise ValueError("chat_id is required")
+        if not cwd:
+            raise ValueError("cwd is required")
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO channel_cwds(platform, chat_id, thread_id, cwd, updated_at, updated_by)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(platform, chat_id, thread_id)
+                   DO UPDATE SET
+                     cwd = excluded.cwd,
+                     updated_at = excluded.updated_at,
+                     updated_by = excluded.updated_by""",
+                (platform, chat_id, thread_value, cwd, time.time(), updated_by),
+            )
+
+        self._execute_write(_do)
+
+    def get_channel_cwd_binding(
+        self,
+        platform: str,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the exact channel/thread cwd binding row, if present."""
+        platform = str(platform).strip().lower()
+        chat_id = str(chat_id).strip()
+        thread_value = str(thread_id).strip() if thread_id is not None and str(thread_id).strip() else ""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM channel_cwds WHERE platform = ? AND chat_id = ? AND thread_id = ?",
+                (platform, chat_id, thread_value),
+            )
+            row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def resolve_channel_cwd(
+        self,
+        platform: str,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+    ) -> Optional[str]:
+        """Resolve thread-specific cwd first, then channel-level cwd."""
+        if thread_id:
+            row = self.get_channel_cwd_binding(platform, chat_id, thread_id=thread_id)
+            if row and row.get("cwd"):
+                return str(row["cwd"])
+        row = self.get_channel_cwd_binding(platform, chat_id)
+        if row and row.get("cwd"):
+            return str(row["cwd"])
+        return None
+
+    def clear_channel_cwd(
+        self,
+        platform: str,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+    ) -> bool:
+        """Delete an exact channel/thread cwd binding. Returns True if deleted."""
+        platform = str(platform).strip().lower()
+        chat_id = str(chat_id).strip()
+        thread_value = str(thread_id).strip() if thread_id is not None and str(thread_id).strip() else ""
+
+        def _do(conn):
+            cursor = conn.execute(
+                "DELETE FROM channel_cwds WHERE platform = ? AND chat_id = ? AND thread_id = ?",
+                (platform, chat_id, thread_value),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    # =========================================================================
     # Export and cleanup
     # =========================================================================
 
@@ -1653,4 +1785,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

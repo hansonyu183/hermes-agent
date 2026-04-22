@@ -290,6 +290,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     merge_pending_message_event,
+    resolve_channel_cwd,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -307,6 +308,48 @@ from gateway.whatsapp_identity import (
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_gateway_thread_metadata(
+    source: "SessionSource",
+    event_message_id: Optional[str] = None,
+) -> Optional[Dict[str, str]]:
+    """Resolve outbound thread metadata for gateway-originated sends.
+
+    Slack DMs and Mattermost channel posts need the inbound message id as a
+    fallback so the very first typing indicator, progress update, streaming
+    delta, or interim status binds to the same new thread. Telegram must not
+    receive that fallback because its thread ids are forum-topic ids.
+    """
+    thread_id = source.thread_id
+    if not thread_id:
+        if source.platform == Platform.SLACK and getattr(source, "chat_type", None) == "dm":
+            thread_id = event_message_id
+        elif source.platform == Platform.MATTERMOST and getattr(source, "chat_type", None) != "dm":
+            thread_id = event_message_id
+    return {"thread_id": thread_id} if thread_id else None
+
+
+def _approval_command_hint(platform: object | None) -> str:
+    """Return user-facing approval command instructions for a platform."""
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value or "").lower() == "mattermost":
+        return (
+            "Reply `!approve` (or `/approve`) to execute, `!approve session` "
+            "(or `/approve session`) to approve this pattern for the session, `!approve always` "
+            "(or `/approve always`) to approve permanently, or `!deny` / `/deny` to cancel."
+        )
+    return (
+        "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, "
+        "`/approve always` to approve permanently, or `/deny` to cancel."
+    )
+
+
+def _update_prompt_reply_hint(platform: object | None) -> str:
+    """Return user-facing yes/no reply instructions for update prompts."""
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value or "").lower() == "mattermost":
+        return "Reply `!approve` (or `/approve`) for yes, or `!deny` (or `/deny`) for no, or type your answer directly."
+    return "Reply `/approve` for yes, or `/deny` for no, or type your answer directly."
 
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
@@ -1559,7 +1602,10 @@ class GatewayRunner:
             if not adapter:
                 return True
 
-            thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            thread_meta = _resolve_gateway_thread_metadata(
+                event.source,
+                event.message_id,
+            )
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
                 message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
@@ -1638,7 +1684,10 @@ class GatewayRunner:
                 f"I'll respond to your message shortly."
             )
 
-        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        thread_meta = _resolve_gateway_thread_metadata(
+            event.source,
+            event.message_id,
+        )
         try:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -3418,6 +3467,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        channel_cwd=event.channel_cwd,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
@@ -3442,6 +3492,7 @@ class GatewayRunner:
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            channel_cwd=event.channel_cwd,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -3464,6 +3515,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        channel_cwd=event.channel_cwd,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -3471,6 +3523,9 @@ class GatewayRunner:
             # /model must not be used while the agent is running.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
                 return "Agent is running — wait or /stop first, then switch models."
+
+            if _cmd_def_inner and _cmd_def_inner.name == "cwd":
+                return await self._handle_cwd_command(event)
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
@@ -3686,6 +3741,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "cwd":
+            return await self._handle_cwd_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -3993,7 +4051,10 @@ class GatewayRunner:
                 )
                 if any(marker in message_text for marker in _stt_fail_markers):
                     _stt_adapter = self.adapters.get(source.platform)
-                    _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    _stt_meta = _resolve_gateway_thread_metadata(
+                        source,
+                        event.message_id,
+                    )
                     if _stt_adapter:
                         try:
                             _stt_msg = (
@@ -4065,7 +4126,8 @@ class GatewayRunner:
                 from agent.context_references import preprocess_context_references_async
                 from agent.model_metadata import get_model_context_length
 
-                _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
+                from gateway.session_context import get_session_cwd
+                _msg_cwd = get_session_cwd(os.path.expanduser("~"))
                 _msg_runtime = _resolve_runtime_agent_kwargs()
                 _msg_ctx_len = get_model_context_length(
                     self._model,
@@ -4125,7 +4187,10 @@ class GatewayRunner:
         context = build_session_context(source, self.config, session_entry)
         
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens = self._set_session_env(
+            context,
+            session_cwd=getattr(event, "channel_cwd", "") or "",
+        )
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -4411,7 +4476,10 @@ class GatewayRunner:
                         f"{_compress_token_threshold:,}",
                     )
 
-                    _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    _hyg_meta = _resolve_gateway_thread_metadata(
+                        source,
+                        event.message_id,
+                    )
 
                     try:
                         from run_agent import AIAgent
@@ -5177,6 +5245,106 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
+    def _ensure_channel_cwd_db(self):
+        if self._session_db is not None:
+            return self._session_db
+        try:
+            from hermes_state import SessionDB
+
+            self._session_db = SessionDB()
+        except Exception as exc:
+            logger.debug("SQLite session store not available for /cwd: %s", exc)
+            return None
+        return self._session_db
+
+    async def _handle_cwd_command(self, event: MessageEvent) -> str:
+        """Handle /cwd — show, set, or clear the chat's default working directory."""
+        db = self._ensure_channel_cwd_db()
+        if db is None:
+            return "⚠️ Channel cwd bindings are unavailable because the SQLite state store is not available."
+
+        source = event.source
+        platform = source.platform.value if getattr(source, "platform", None) else ""
+        chat_id = str(getattr(source, "chat_id", "") or "").strip()
+        thread_id = str(getattr(source, "thread_id", "") or "").strip() or None
+        binding_thread_id = thread_id if thread_id and thread_id != chat_id else None
+        args = event.get_command_args().strip()
+
+        if not platform or not chat_id:
+            return "⚠️ This chat does not expose a stable channel id, so /cwd is unavailable here."
+
+        if not args or args.lower() == "status":
+            dynamic_row = db.get_channel_cwd_binding(platform, chat_id, thread_id=binding_thread_id)
+            dynamic_cwd = dynamic_row.get("cwd") if dynamic_row else None
+            config_cwd = resolve_channel_cwd(
+                getattr(self.config.platforms.get(source.platform), "extra", {}) if getattr(self, "config", None) and getattr(self.config, "platforms", None) else {},
+                thread_id or chat_id,
+                chat_id if thread_id else None,
+                platform=None,
+            )
+            if dynamic_cwd:
+                effective_cwd = dynamic_cwd
+                effective_source = "dynamic binding"
+            else:
+                if config_cwd:
+                    effective_cwd = config_cwd
+                    effective_source = "config fallback"
+                else:
+                    effective_cwd = os.getenv("TERMINAL_CWD") or str(Path.home())
+                    effective_source = "global default"
+            updated_by = dynamic_row.get("updated_by") if dynamic_row else None
+            lines = [
+                "📁 **Channel working directory**",
+                "",
+                f"**Platform:** `{platform}`",
+                f"**Channel:** `{chat_id}`",
+            ]
+            if thread_id:
+                lines.append(f"**Thread:** `{thread_id}`")
+            lines.extend(
+                [
+                    f"**Dynamic binding:** {dynamic_cwd or '—'}",
+                    f"**Config fallback:** {config_cwd or '—'}",
+                    f"**Effective cwd:** {effective_cwd}",
+                    f"**Effective source:** {effective_source}",
+                ]
+            )
+            if updated_by:
+                lines.append(f"**Updated by:** {updated_by}")
+            return "\n".join(lines)
+
+        if args.lower() == "clear":
+            cleared = db.clear_channel_cwd(platform, chat_id, thread_id=binding_thread_id)
+            if cleared:
+                return "✅ Cleared the cwd binding for this channel."
+            return "No cwd binding is currently set for this channel."
+
+        path_arg = args
+        lowered = args.lower()
+        if lowered.startswith("set "):
+            path_arg = args[4:].strip()
+
+        if not path_arg:
+            return "Usage: /cwd [status|clear|set <absolute-path>|<absolute-path>]"
+
+        target = Path(path_arg).expanduser()
+        if not target.is_absolute():
+            return "⚠️ Please provide an absolute path for /cwd."
+        if not target.exists():
+            return f"⚠️ Path does not exist: {target}"
+        if not target.is_dir():
+            return f"⚠️ Path is not a directory: {target}"
+
+        normalized = str(target.resolve())
+        db.set_channel_cwd(
+            platform,
+            chat_id,
+            normalized,
+            thread_id=binding_thread_id,
+            updated_by=source.user_name or source.user_id,
+        )
+        return f"✅ Default working directory set for this channel: `{normalized}`"
+
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
         from tools.process_registry import format_uptime_short, process_registry
@@ -5678,7 +5846,10 @@ class GatewayRunner:
                         lines.append("_(session only — use `/model <name> --global` to persist)_")
                         return "\n".join(lines)
 
-                    metadata = {"thread_id": source.thread_id} if source.thread_id else None
+                    metadata = _resolve_gateway_thread_metadata(
+                        source,
+                        event.message_id,
+                    )
                     result = await adapter.send_model_picker(
                         chat_id=source.chat_id,
                         providers=providers,
@@ -5947,6 +6118,7 @@ class GatewayRunner:
             source=source,
             raw_message=event.raw_message,
             channel_prompt=event.channel_prompt,
+            channel_cwd=event.channel_cwd,
         )
         
         # Let the normal message handler process it
@@ -6340,8 +6512,12 @@ class GatewayRunner:
                     "audio_path": actual_path,
                     "reply_to": event.message_id,
                 }
-                if event.source.thread_id:
-                    send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
+                _thread_meta = _resolve_gateway_thread_metadata(
+                    event.source,
+                    event.message_id,
+                )
+                if _thread_meta:
+                    send_kwargs["metadata"] = _thread_meta
                 await adapter.send_voice(**send_kwargs)
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
@@ -6371,7 +6547,10 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            _thread_meta = _resolve_gateway_thread_metadata(
+                event.source,
+                event.message_id,
+            )
 
             _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -6457,7 +6636,8 @@ class GatewayRunner:
             max_snapshots=cp_cfg.get("max_snapshots", 50),
         )
 
-        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
+        from gateway.session_context import get_session_cwd
+        cwd = get_session_cwd(str(Path.home()))
         arg = event.get_command_args().strip()
 
         if not arg:
@@ -6625,6 +6805,7 @@ class GatewayRunner:
                             chat_id=source.chat_id,
                             image_url=image_url,
                             caption=alt_text,
+                            metadata=_thread_metadata,
                         )
                     except Exception:
                         pass
@@ -6635,6 +6816,7 @@ class GatewayRunner:
                         await adapter.send_document(
                             chat_id=source.chat_id,
                             file_path=media_path,
+                            metadata=_thread_metadata,
                         )
                     except Exception:
                         pass
@@ -6804,13 +6986,22 @@ class GatewayRunner:
 
             for image_url, alt_text in (images or []):
                 try:
-                    await adapter.send_image(chat_id=source.chat_id, image_url=image_url, caption=alt_text)
+                    await adapter.send_image(
+                        chat_id=source.chat_id,
+                        image_url=image_url,
+                        caption=alt_text,
+                        metadata=_thread_meta,
+                    )
                 except Exception:
                     pass
 
             for media_path, _is_voice in (media_files or []):
                 try:
-                    await adapter.send_file(chat_id=source.chat_id, file_path=media_path)
+                    await adapter.send_file(
+                        chat_id=source.chat_id,
+                        file_path=media_path,
+                        metadata=_thread_meta,
+                    )
                 except Exception:
                     pass
 
@@ -8055,8 +8246,7 @@ class GatewayRunner:
                                 chat_id,
                                 f"⚕ **Update needs your input:**\n\n"
                                 f"{prompt_text}{default_hint}\n\n"
-                                f"Reply `/approve` (yes) or `/deny` (no), "
-                                f"or type your answer directly."
+                                f"{_update_prompt_reply_hint(getattr(adapter, 'platform', None))}"
                             )
                         self._update_prompt_pending[session_key] = True
                         # Remove the prompt file so it isn't re-read on the
@@ -8211,7 +8401,7 @@ class GatewayRunner:
         finally:
             notify_path.unlink(missing_ok=True)
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(self, context: SessionContext, session_cwd: str = "") -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -8229,6 +8419,7 @@ class GatewayRunner:
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            session_cwd=session_cwd or "",
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -10082,8 +10273,7 @@ class GatewayRunner:
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+                    f"{_approval_command_hint(getattr(_status_adapter, 'platform', None))}"
                 )
                 try:
                     asyncio.run_coroutine_threadsafe(

@@ -3040,12 +3040,18 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
 
         # Per-channel/topic ephemeral prompt
-        from gateway.platforms.base import resolve_channel_prompt
+        from gateway.platforms.base import resolve_channel_cwd, resolve_channel_prompt
         _chat_id_str = str(chat.id)
         _channel_prompt = resolve_channel_prompt(
             self.config.extra,
             thread_id_str or _chat_id_str,
             _chat_id_str if thread_id_str else None,
+        )
+        _channel_cwd = resolve_channel_cwd(
+            self.config.extra,
+            thread_id_str or _chat_id_str,
+            _chat_id_str if thread_id_str else None,
+            platform=self.platform.value,
         )
 
         return MessageEvent(
@@ -3059,6 +3065,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            channel_cwd=_channel_cwd,
             timestamp=message.date,
         )
 

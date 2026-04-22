@@ -592,6 +592,12 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                if "channel_cwds" in platform_cfg:
+                    channel_cwds = platform_cfg["channel_cwds"]
+                    if isinstance(channel_cwds, dict):
+                        bridged["channel_cwds"] = {str(k): v for k, v in channel_cwds.items()}
+                    else:
+                        bridged["channel_cwds"] = channel_cwds
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})

@@ -136,6 +136,32 @@ class TestSessionLifecycle:
         assert child["parent_session_id"] == "parent"
 
 
+class TestChannelCwdBindings:
+    def test_set_and_resolve_channel_cwd(self, db):
+        db.set_channel_cwd("mattermost", "chan-1", "/srv/work/project-a", updated_by="hanson")
+
+        row = db.get_channel_cwd_binding("mattermost", "chan-1")
+        assert row is not None
+        assert row["cwd"] == "/srv/work/project-a"
+        assert row["updated_by"] == "hanson"
+        assert db.resolve_channel_cwd("mattermost", "chan-1") == "/srv/work/project-a"
+
+    def test_thread_binding_overrides_channel_binding(self, db):
+        db.set_channel_cwd("telegram", "chat-1", "/srv/work/default")
+        db.set_channel_cwd("telegram", "chat-1", "/srv/work/topic-1", thread_id="42")
+
+        assert db.resolve_channel_cwd("telegram", "chat-1", thread_id="42") == "/srv/work/topic-1"
+        assert db.resolve_channel_cwd("telegram", "chat-1", thread_id="99") == "/srv/work/default"
+
+    def test_clear_channel_cwd_binding(self, db):
+        db.set_channel_cwd("discord", "123", "/srv/work/project-a")
+        assert db.resolve_channel_cwd("discord", "123") == "/srv/work/project-a"
+
+        assert db.clear_channel_cwd("discord", "123") is True
+        assert db.resolve_channel_cwd("discord", "123") is None
+        assert db.clear_channel_cwd("discord", "123") is False
+
+
 # =========================================================================
 # Message storage
 # =========================================================================
@@ -1173,7 +1199,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 8
+        assert version == 9
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1229,12 +1255,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v8
+        # Open with SessionDB — should migrate to the latest schema.
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 8
+        assert cursor.fetchone()[0] == 9
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1246,6 +1272,12 @@ class TestSchemaInit:
             "SELECT api_call_count FROM sessions WHERE id = 'existing'"
         )
         assert cursor.fetchone()[0] == 0
+
+        # Verify channel cwd bindings table was added for existing databases.
+        cursor = migrated_db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='channel_cwds'"
+        )
+        assert cursor.fetchone()[0] == "channel_cwds"
 
         # Verify we can set title on migrated session
         assert migrated_db.set_session_title("existing", "Migrated Title") is True
@@ -1911,4 +1943,3 @@ class TestAutoMaintenance:
         assert marker is not None
         # Should parse as a float timestamp close to now.
         assert abs(float(marker) - time.time()) < 60
-
