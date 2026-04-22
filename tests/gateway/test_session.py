@@ -419,6 +419,7 @@ class TestBuildSessionContextPrompt:
 
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
+        assert build_session_key(source) == "agent:main:telegram:dm:99"
 
 
 class TestSessionStoreRewriteTranscript:
@@ -831,7 +832,7 @@ class TestWhatsAppSessionKeyConsistency:
             user_id="alice",
         )
 
-        assert build_session_key(source) == "agent:main:telegram:dm:99:topic-1"
+        assert build_session_key(source) == "agent:main:telegram:dm:99"
         assert is_shared_multi_user_session(source) is False
 
     def test_private_chat_type_without_thread_uses_dm_keyspace(self):
@@ -972,7 +973,7 @@ class TestWhatsAppSessionKeyConsistency:
         assert "bob" not in build_session_key(bob)
 
     def test_dm_thread_sessions_not_affected(self):
-        """DM threads use their own keying logic and are not affected."""
+        """DM thread ids must not split one DM into multiple sessions."""
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="99",
@@ -981,8 +982,7 @@ class TestWhatsAppSessionKeyConsistency:
             user_id="42",
         )
         key = build_session_key(source)
-        # DM logic: chat_id + thread_id, user_id never included
-        assert key == "agent:main:telegram:dm:99:topic-1"
+        assert key == "agent:main:telegram:dm:99"
 
 
 class TestWhatsAppIdentifierPublicHelpers:
