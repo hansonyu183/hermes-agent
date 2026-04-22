@@ -2250,6 +2250,25 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
     return True
 
 
+def _wait_for_gateway_restart(previous_pid: int, timeout: float = 15.0) -> bool:
+    """Wait for the gateway PID to change after an in-process restart request."""
+    import time
+    from gateway.status import get_running_pid
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pid = get_running_pid()
+        if pid is not None and pid != previous_pid:
+            return True
+        time.sleep(0.3)
+    current_pid = get_running_pid()
+    if current_pid == previous_pid:
+        print(f"⚠ Gateway PID {previous_pid} did not change after {timeout}s")
+    else:
+        print(f"⚠ Gateway did not report a new PID within {timeout}s")
+    return False
+
+
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
@@ -2259,9 +2278,11 @@ def launchd_restart():
     try:
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
-            return
-        if pid is not None:
+            if _wait_for_gateway_restart(pid, timeout=drain_timeout + 5.0):
+                print("✓ Service restarted")
+                return
+            print("⚠ Service self-restart did not complete in time; forcing launchd restart")
+        elif pid is not None:
             try:
                 terminate_pid(pid, force=False)
             except (ProcessLookupError, PermissionError, OSError):
