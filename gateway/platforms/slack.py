@@ -1256,6 +1256,10 @@ class SlackAdapter(BasePlatformAdapter):
             self.config.extra, channel_id, thread_ts,
             platform=self.platform.value,
         )
+        _channel_cwd = resolve_channel_cwd(
+            self.config.extra, channel_id, None,
+            platform=self.platform.value,
+        )
 
         msg_event = MessageEvent(
             text=text,
