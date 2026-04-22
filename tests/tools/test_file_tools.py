@@ -13,10 +13,20 @@ from tools.file_tools import (
     WRITE_FILE_SCHEMA,
     PATCH_SCHEMA,
     SEARCH_FILES_SCHEMA,
+    _resolve_path,
 )
 
 
 class TestReadFileHandler:
+    @patch("gateway.session_context.get_session_cwd")
+    def test_resolve_path_prefers_session_cwd(self, mock_get_session_cwd, tmp_path):
+        mock_get_session_cwd.return_value = str(tmp_path / "session-root")
+
+        resolved = _resolve_path("docs/readme.md")
+
+        assert resolved == (tmp_path / "session-root" / "docs/readme.md").resolve()
+        mock_get_session_cwd.assert_called_once()
+
     @patch("tools.file_tools._get_file_ops")
     def test_returns_file_content(self, mock_get):
         mock_ops = MagicMock()

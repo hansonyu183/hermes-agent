@@ -1,4 +1,5 @@
 """Tests for Mattermost platform adapter."""
+import asyncio
 import json
 import os
 import time
@@ -6,6 +7,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +206,124 @@ class TestMattermostSend:
         assert result.success is True
         payload = self.adapter._session.post.call_args[1]["json"]
         assert payload["root_id"] == "root_post"
+
+
+    @pytest.mark.asyncio
+    async def test_send_with_metadata_thread_id_sets_root_id(self):
+        """thread_id metadata should map to Mattermost root_id."""
+        self.adapter._reply_mode = "off"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_meta"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            metadata={"thread_id": "root_from_metadata"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "root_from_metadata"
+
+    @pytest.mark.asyncio
+    async def test_send_prefers_metadata_thread_id_over_reply_to(self):
+        """Thread metadata should win over reply_to when both are present."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_meta_pref"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            reply_to="explicit_reply",
+            metadata={"thread_id": "root_from_metadata"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "root_from_metadata"
+
+    @pytest.mark.asyncio
+    async def test_send_typing_uses_metadata_thread_id_as_parent_id(self):
+        """Typing events should stay inside the Mattermost thread when provided."""
+        self.adapter._bot_user_id = "bot_123"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"ok": True})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        await self.adapter.send_typing(
+            "channel_1",
+            metadata={"thread_id": "root_from_metadata"},
+        )
+
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload == {
+            "channel_id": "channel_1",
+            "parent_id": "root_from_metadata",
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_typing_without_thread_is_suppressed_in_thread_mode(self):
+        """Mattermost thread mode must not leak typing indicators into the channel."""
+        self.adapter._bot_user_id = "bot_123"
+        self.adapter._reply_mode = "thread"
+        self.adapter._session.post = MagicMock()
+
+        await self.adapter.send_typing("channel_1")
+
+        self.adapter._session.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_keep_typing_preserves_thread_parent_id(self):
+        """The background typing loop should keep Mattermost parent_id threading."""
+        self.adapter._bot_user_id = "bot_123"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"ok": True})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        task = asyncio.create_task(
+            self.adapter._keep_typing(
+                "channel_1",
+                interval=0.01,
+                metadata={"thread_id": "root_from_metadata"},
+            )
+        )
+        await asyncio.sleep(0.02)
+        task.cancel()
+        await task
+
+        assert self.adapter._session.post.called
+        payload = self.adapter._session.post.call_args_list[0][1]["json"]
+        assert payload == {
+            "channel_id": "channel_1",
+            "parent_id": "root_from_metadata",
+        }
 
     @pytest.mark.asyncio
     async def test_send_without_thread_no_root_id(self):
@@ -534,6 +654,84 @@ class TestMattermostFileUpload:
         assert result.message_id == "post_with_file"
 
 
+    @pytest.mark.asyncio
+    @patch("tools.url_safety.is_safe_url", return_value=True)
+    async def test_send_image_uses_metadata_thread_id_for_root_id(self, _mock_safe):
+        """Image posts from threaded contexts should keep Mattermost root_id."""
+        mock_dl_resp = AsyncMock()
+        mock_dl_resp.status = 200
+        mock_dl_resp.read = AsyncMock(return_value=b"\x89PNG\x00fake-image-data")
+        mock_dl_resp.content_type = "image/png"
+        mock_dl_resp.__aenter__ = AsyncMock(return_value=mock_dl_resp)
+        mock_dl_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_upload_resp = AsyncMock()
+        mock_upload_resp.status = 200
+        mock_upload_resp.json = AsyncMock(return_value={
+            "file_infos": [{"id": "file_thread"}]
+        })
+        mock_upload_resp.text = AsyncMock(return_value="")
+        mock_upload_resp.__aenter__ = AsyncMock(return_value=mock_upload_resp)
+        mock_upload_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_post_resp = AsyncMock()
+        mock_post_resp.status = 200
+        mock_post_resp.json = AsyncMock(return_value={"id": "post_thread"})
+        mock_post_resp.text = AsyncMock(return_value="")
+        mock_post_resp.__aenter__ = AsyncMock(return_value=mock_post_resp)
+        mock_post_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.get = MagicMock(return_value=mock_dl_resp)
+        self.adapter._session.post = MagicMock(side_effect=[mock_upload_resp, mock_post_resp])
+
+        result = await self.adapter.send_image(
+            "channel_1",
+            "https://img.example.com/cat.png",
+            caption="A cat",
+            metadata={"thread_id": "root_from_metadata"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args_list[1][1]["json"]
+        assert payload["root_id"] == "root_from_metadata"
+
+    @pytest.mark.asyncio
+    async def test_send_document_uses_metadata_thread_id_for_root_id(self, tmp_path):
+        """Local file posts from threaded contexts should keep Mattermost root_id."""
+        self.adapter._reply_mode = "off"
+        doc_path = tmp_path / "report.txt"
+        doc_path.write_text("hello")
+
+        mock_upload_resp = AsyncMock()
+        mock_upload_resp.status = 200
+        mock_upload_resp.json = AsyncMock(return_value={
+            "file_infos": [{"id": "file_doc"}]
+        })
+        mock_upload_resp.text = AsyncMock(return_value="")
+        mock_upload_resp.__aenter__ = AsyncMock(return_value=mock_upload_resp)
+        mock_upload_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_post_resp = AsyncMock()
+        mock_post_resp.status = 200
+        mock_post_resp.json = AsyncMock(return_value={"id": "post_doc"})
+        mock_post_resp.text = AsyncMock(return_value="")
+        mock_post_resp.__aenter__ = AsyncMock(return_value=mock_post_resp)
+        mock_post_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(side_effect=[mock_upload_resp, mock_post_resp])
+
+        result = await self.adapter.send_document(
+            "channel_1",
+            str(doc_path),
+            caption="Document",
+            metadata={"thread_id": "root_from_metadata"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args_list[1][1]["json"]
+        assert payload["root_id"] == "root_from_metadata"
+
+
 # ---------------------------------------------------------------------------
 # Dedup cache
 # ---------------------------------------------------------------------------
@@ -592,6 +790,104 @@ class TestMattermostDedup:
             await self.adapter._handle_ws_event(event)
 
         assert self.adapter.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_root_post_uses_its_own_post_id_as_thread_id(self):
+        """Top-level thread starters should bind follow-up output to the root post id."""
+        post_data = {
+            "id": "post_root",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id Start thread",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        msg = self.adapter.handle_message.call_args[0][0]
+        assert msg.source.thread_id == "post_root"
+
+    @pytest.mark.asyncio
+    async def test_bang_approval_alias_maps_to_command(self):
+        """Mattermost should accept !-prefixed approval replies without slash integration."""
+        self.adapter._bot_username = "bot_user_id"
+        post_data = {
+            "id": "post_approve",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id !approve always",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        msg = self.adapter.handle_message.call_args[0][0]
+        assert msg.message_type == MessageType.COMMAND
+        assert msg.text == "/approve always"
+
+    @pytest.mark.asyncio
+    async def test_bang_model_command_maps_to_slash_command(self):
+        """Selected high-frequency commands should work with ! prefix."""
+        self.adapter._bot_username = "bot_user_id"
+        post_data = {
+            "id": "post_model",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id !model gpt-5",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        msg = self.adapter.handle_message.call_args[0][0]
+        assert msg.message_type == MessageType.COMMAND
+        assert msg.text == "/model gpt-5"
+
+    @pytest.mark.asyncio
+    async def test_bare_plain_text_is_not_rewritten_as_command(self):
+        """Normal conversation text must not be coerced into slash commands."""
+        self.adapter._bot_username = "bot_user_id"
+        post_data = {
+            "id": "post_plain",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id please stop doing that",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        msg = self.adapter.handle_message.call_args[0][0]
+        assert msg.message_type == MessageType.TEXT
+        assert msg.text == "please stop doing that"
 
     def test_prune_seen_clears_expired(self):
         """Dedup cache should remove entries older than TTL on overflow."""

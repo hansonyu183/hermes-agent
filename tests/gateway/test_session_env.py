@@ -60,6 +60,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
+    assert get_session_env("HERMES_SESSION_CWD") == ""
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
@@ -104,6 +105,25 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == ""
     assert get_session_env("HERMES_SESSION_USER_NAME") == ""
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
+    assert get_session_env("HERMES_SESSION_CWD") == ""
+
+
+def test_session_cwd_contextvar_roundtrip(monkeypatch):
+    """Session cwd should prefer contextvars over TERMINAL_CWD env fallback."""
+    from gateway.session_context import get_session_cwd
+
+    monkeypatch.setenv("TERMINAL_CWD", "/env/project")
+
+    assert get_session_cwd() == "/env/project"
+    assert get_session_cwd("/fallback") == "/env/project"
+
+    tokens = set_session_vars(session_cwd="/channel/project")
+    assert get_session_env("HERMES_SESSION_CWD") == "/channel/project"
+    assert get_session_cwd() == "/channel/project"
+
+    clear_session_vars(tokens)
+    assert get_session_env("HERMES_SESSION_CWD") == ""
+    assert get_session_cwd("/fallback") == "/env/project"
 
 
 def test_get_session_env_falls_back_to_os_environ(monkeypatch):

@@ -6,12 +6,18 @@ import sys
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
+from gateway.run import (
+    _approval_command_hint,
+    _resolve_gateway_thread_metadata,
+    _update_prompt_reply_hint,
+)
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -149,6 +155,99 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_bypass_command_keeps_mattermost_top_level_replies_in_thread():
+    adapter = ProgressCaptureAdapter(platform=Platform.MATTERMOST)
+    adapter._message_handler = AsyncMock(return_value="approved")
+
+    event = MessageEvent(
+        source=SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id="channel-123",
+            chat_type="channel",
+            thread_id=None,
+        ),
+        message_id="post-root-1",
+        message_type=MessageType.COMMAND,
+        text="/approve",
+    )
+    session_key = build_session_key(
+        event.source,
+        group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+        thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+    )
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.handle_message(event)
+
+    assert adapter.sent == [
+        {
+            "chat_id": "channel-123",
+            "content": "approved",
+            "reply_to": "post-root-1",
+            "metadata": {"thread_id": "post-root-1"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_busy_ack_uses_event_message_id_for_mattermost_top_level_thread():
+    adapter = ProgressCaptureAdapter(platform=Platform.MATTERMOST)
+    runner = _make_runner(adapter)
+    runner._draining = False
+    runner._busy_ack_ts = {}
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+
+    event = MessageEvent(
+        source=SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id="channel-123",
+            chat_type="channel",
+            thread_id=None,
+        ),
+        message_id="post-root-1",
+        message_type=MessageType.TEXT,
+        text="follow-up",
+    )
+
+    handled = await runner._handle_active_session_busy_message(event, "sess-busy")
+
+    assert handled is True
+    assert adapter.sent == [
+        {
+            "chat_id": "channel-123",
+            "content": "⚡ Interrupting current task. I'll respond to your message shortly.",
+            "reply_to": "post-root-1",
+            "metadata": {"thread_id": "post-root-1"},
+        }
+    ]
+
+
+def test_approval_command_hint_is_platform_specific():
+    assert "!approve" in _approval_command_hint(Platform.MATTERMOST)
+    assert "!approve" not in _approval_command_hint(Platform.SLACK)
+    assert "`/approve`" in _approval_command_hint(Platform.SLACK)
+
+
+def test_update_prompt_reply_hint_is_platform_specific():
+    assert "!approve" in _update_prompt_reply_hint(Platform.MATTERMOST)
+    assert "!approve" not in _update_prompt_reply_hint(Platform.TELEGRAM)
+    assert "`/approve`" in _update_prompt_reply_hint(Platform.TELEGRAM)
+
+
+def test_gateway_thread_metadata_does_not_force_top_level_slack_channel_into_thread():
+    source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="group",
+        thread_id=None,
+    )
+
+    assert _approval_command_hint(Platform.SLACK)
+    assert _resolve_gateway_thread_metadata(source, "1712345.6789") is None
 
 
 @pytest.mark.asyncio

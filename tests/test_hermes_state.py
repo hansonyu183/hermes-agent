@@ -115,6 +115,32 @@ class TestSessionLifecycle:
         assert child["parent_session_id"] == "parent"
 
 
+class TestChannelCwdBindings:
+    def test_set_and_resolve_channel_cwd(self, db):
+        db.set_channel_cwd("mattermost", "chan-1", "/srv/work/project-a", updated_by="hanson")
+
+        row = db.get_channel_cwd_binding("mattermost", "chan-1")
+        assert row is not None
+        assert row["cwd"] == "/srv/work/project-a"
+        assert row["updated_by"] == "hanson"
+        assert db.resolve_channel_cwd("mattermost", "chan-1") == "/srv/work/project-a"
+
+    def test_thread_binding_overrides_channel_binding(self, db):
+        db.set_channel_cwd("telegram", "chat-1", "/srv/work/default")
+        db.set_channel_cwd("telegram", "chat-1", "/srv/work/topic-1", thread_id="42")
+
+        assert db.resolve_channel_cwd("telegram", "chat-1", thread_id="42") == "/srv/work/topic-1"
+        assert db.resolve_channel_cwd("telegram", "chat-1", thread_id="99") == "/srv/work/default"
+
+    def test_clear_channel_cwd_binding(self, db):
+        db.set_channel_cwd("discord", "123", "/srv/work/project-a")
+        assert db.resolve_channel_cwd("discord", "123") == "/srv/work/project-a"
+
+        assert db.clear_channel_cwd("discord", "123") is True
+        assert db.resolve_channel_cwd("discord", "123") is None
+        assert db.clear_channel_cwd("discord", "123") is False
+
+
 # =========================================================================
 # Message storage
 # =========================================================================
@@ -1120,7 +1146,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 7
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1176,12 +1202,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v7
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 7
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
