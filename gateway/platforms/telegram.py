@@ -63,6 +63,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.session import _is_dm_chat_type
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -2994,7 +2995,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_topic = None
         topic_skill = None
 
-        if chat_type == "dm" and thread_id_str:
+        if _is_dm_chat_type(chat_type) and thread_id_str:
             topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
             if topic_info:
                 chat_topic = topic_info.get("name")
@@ -3026,8 +3027,8 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
-            user_id=str(user.id) if user else (str(chat.id) if chat_type == "dm" else None),
-            user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
+            user_id=str(user.id) if user else (str(chat.id) if _is_dm_chat_type(chat_type) else None),
+            user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and _is_dm_chat_type(chat_type) else None),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
         )

@@ -12,6 +12,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
+    is_shared_multi_user_session,
     normalize_whatsapp_identifier,
 )
 
@@ -819,6 +820,30 @@ class TestWhatsAppSessionKeyConsistency:
         assert build_session_key(first) == "agent:main:telegram:dm:99"
         assert build_session_key(second) == "agent:main:telegram:dm:100"
         assert build_session_key(first) != build_session_key(second)
+
+    def test_private_chat_type_is_treated_as_dm_even_with_thread_id(self):
+        """Platform-native private chats must not become shared multi-user threads."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="private",
+            thread_id="topic-1",
+            user_id="alice",
+        )
+
+        assert build_session_key(source) == "agent:main:telegram:dm:99:topic-1"
+        assert is_shared_multi_user_session(source) is False
+
+    def test_private_chat_type_without_thread_uses_dm_keyspace(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="private",
+            user_id="alice",
+        )
+
+        assert build_session_key(source) == "agent:main:telegram:dm:99"
+        assert is_shared_multi_user_session(source) is False
 
     def test_discord_group_includes_chat_id(self):
         """Group/channel keys include chat_type and chat_id."""

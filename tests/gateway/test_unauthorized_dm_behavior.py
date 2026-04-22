@@ -39,7 +39,7 @@ def _clear_auth_env(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def _make_event(platform: Platform, user_id: str, chat_id: str) -> MessageEvent:
+def _make_event(platform: Platform, user_id: str, chat_id: str, chat_type: str = "dm") -> MessageEvent:
     return MessageEvent(
         text="hello",
         message_id="m1",
@@ -48,7 +48,7 @@ def _make_event(platform: Platform, user_id: str, chat_id: str) -> MessageEvent:
             user_id=user_id,
             chat_id=chat_id,
             user_name="tester",
-            chat_type="dm",
+            chat_type=chat_type,
         ),
     )
 
@@ -223,6 +223,34 @@ async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     )
     adapter.send.assert_awaited_once()
     assert "ABC12DEF" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_private_chat_pairs_like_dm(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+    )
+    runner, adapter = _make_runner(Platform.TELEGRAM, config)
+    runner.pairing_store.generate_code.return_value = "TGPAIR1"
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.TELEGRAM,
+            "123456789",
+            "123456789",
+            chat_type="private",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_called_once_with(
+        "telegram",
+        "123456789",
+        "tester",
+    )
+    adapter.send.assert_awaited_once()
+    assert "TGPAIR1" in adapter.send.await_args.args[1]
 
 
 @pytest.mark.asyncio

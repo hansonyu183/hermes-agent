@@ -98,7 +98,7 @@ class SessionSource:
             return "CLI terminal"
         
         parts = []
-        if self.chat_type == "dm":
+        if _is_dm_chat_type(self.chat_type):
             parts.append(f"DM with {self.user_name or self.user_id or 'user'}")
         elif self.chat_type == "group":
             parts.append(f"group: {self.chat_name or self.chat_id}")
@@ -227,6 +227,13 @@ def _discord_tools_loaded() -> bool:
         return False
 
 
+_DM_CHAT_TYPES = frozenset({"dm", "private"})
+
+
+def _is_dm_chat_type(chat_type: str | None) -> bool:
+    return str(chat_type or "").lower() in _DM_CHAT_TYPES
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -266,7 +273,7 @@ def build_session_context_prompt(
                 _hash_sender_id(src.user_id) if src.user_id else "user"
             )
             _cname = src.chat_name or _hash_chat_id(src.chat_id)
-            if src.chat_type == "dm":
+            if _is_dm_chat_type(src.chat_type):
                 desc = f"DM with {_uname}"
             elif src.chat_type == "group":
                 desc = f"group: {_cname}"
@@ -553,7 +560,7 @@ def is_shared_multi_user_session(
       - Non-thread group/channel sessions are shared unless
         ``group_sessions_per_user`` is True (default: True = isolated).
     """
-    if source.chat_type == "dm":
+    if _is_dm_chat_type(source.chat_type):
         return False
     if source.thread_id:
         return not thread_sessions_per_user
@@ -589,7 +596,7 @@ def build_session_key(
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
-    if source.chat_type == "dm":
+    if _is_dm_chat_type(source.chat_type):
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
             dm_chat_id = canonical_whatsapp_identifier(source.chat_id)

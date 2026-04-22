@@ -283,6 +283,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    _is_dm_chat_type,
 )
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
@@ -322,9 +323,9 @@ def _resolve_gateway_thread_metadata(
     """
     thread_id = source.thread_id
     if not thread_id:
-        if source.platform == Platform.SLACK and getattr(source, "chat_type", None) == "dm":
+        if source.platform == Platform.SLACK and _is_dm_chat_type(getattr(source, "chat_type", None)):
             thread_id = event_message_id
-        elif source.platform == Platform.MATTERMOST and getattr(source, "chat_type", None) != "dm":
+        elif source.platform == Platform.MATTERMOST and not _is_dm_chat_type(getattr(source, "chat_type", None)):
             thread_id = event_message_id
     return {"thread_id": thread_id} if thread_id else None
 
@@ -3284,7 +3285,7 @@ class GatewayRunner:
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
-            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
+            if source.chat_type and _is_dm_chat_type(source.chat_type) and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
                 # Rate-limit ALL pairing responses (code or rejection) to
                 # prevent spamming the user with repeated messages when

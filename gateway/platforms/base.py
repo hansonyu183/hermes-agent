@@ -346,7 +346,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, _is_dm_chat_type, build_session_key
 from hermes_constants import get_hermes_dir
 
 
@@ -2221,9 +2221,9 @@ class BasePlatformAdapter(ABC):
         """
         thread_id = event.source.thread_id
         if not thread_id:
-            if event.source.platform == Platform.SLACK and event.source.chat_type == "dm":
+            if event.source.platform == Platform.SLACK and _is_dm_chat_type(event.source.chat_type):
                 thread_id = event.message_id
-            elif event.source.platform == Platform.MATTERMOST and event.source.chat_type != "dm":
+            elif event.source.platform == Platform.MATTERMOST and not _is_dm_chat_type(event.source.chat_type):
                 thread_id = event.message_id
         return {"thread_id": thread_id} if thread_id else None
 
