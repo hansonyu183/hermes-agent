@@ -130,9 +130,10 @@ def _normalize_plain_text_command(text: str) -> Optional[str]:
     if exact:
         return exact
 
-    first, _, rest = lowered.partition(" ")
-    if first in _PLAIN_TEXT_COMMAND_PREFIXES and rest.strip():
-        return f"/{first} {rest.strip()}"
+    first_raw, _, rest_raw = collapsed.partition(" ")
+    first = first_raw.lower()
+    if first in _PLAIN_TEXT_COMMAND_PREFIXES and rest_raw.strip():
+        return f"/{first} {rest_raw.strip()}"
 
     return None
 

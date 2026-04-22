@@ -99,6 +99,24 @@ async def test_cwd_set_and_clear_command_roundtrip(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cwd_stores_filesystem_canonical_case(tmp_path):
+    from hermes_state import SessionDB
+
+    project_dir = tmp_path / "MyProject"
+    project_dir.mkdir()
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db)
+
+    entered_path = str(tmp_path / "myproject")
+    result = await runner._handle_message(_make_event(f"/cwd {entered_path}"))
+
+    assert "set for this channel" in result.lower()
+    assert session_db.resolve_channel_cwd("mattermost", "channel-1", thread_id="thread-1") == str(project_dir)
+
+    session_db.close()
+
+
+@pytest.mark.asyncio
 async def test_cwd_command_is_handled_without_interrupting_running_agent(tmp_path):
     from hermes_state import SessionDB
 

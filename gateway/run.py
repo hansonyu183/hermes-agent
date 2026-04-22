@@ -352,6 +352,37 @@ def _update_prompt_reply_hint(platform: object | None) -> str:
         return "Reply `!approve` (or `/approve`) for yes, or `!deny` (or `/deny`) for no, or type your answer directly."
     return "Reply `/approve` for yes, or `/deny` for no, or type your answer directly."
 
+
+def _canonicalize_existing_path_case(path: Path) -> Path:
+    """Return ``path`` with filesystem casing where it can be discovered.
+
+    On case-insensitive filesystems, users may type `/users/name/project` while the
+    real path is `/Users/Name/Project`. `Path.resolve()` preserves the typed case,
+    so walk the tree segment-by-segment and replace each segment with the actual
+    directory entry name when a case-insensitive match exists.
+    """
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        return expanded
+
+    parts = expanded.parts
+    if not parts:
+        return expanded
+
+    current = Path(parts[0])
+    for idx, part in enumerate(parts[1:], start=1):
+        try:
+            matches = [entry.name for entry in os.scandir(current) if entry.name.casefold() == part.casefold()]
+        except OSError:
+            matches = []
+        chosen = matches[0] if matches else part
+        current = current / chosen
+        if not matches:
+            for remainder in parts[idx + 1:]:
+                current = current / remainder
+            break
+    return current
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -5336,7 +5367,7 @@ class GatewayRunner:
         if not target.is_dir():
             return f"⚠️ Path is not a directory: {target}"
 
-        normalized = str(target.resolve())
+        normalized = str(_canonicalize_existing_path_case(target))
         db.set_channel_cwd(
             platform,
             chat_id,

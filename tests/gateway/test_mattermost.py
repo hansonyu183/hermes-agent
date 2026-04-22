@@ -865,6 +865,31 @@ class TestMattermostDedup:
         assert msg.text == "/model gpt-5"
 
     @pytest.mark.asyncio
+    async def test_bang_cwd_command_preserves_argument_case(self):
+        """!cwd should preserve cwd argument case when normalizing the command."""
+        self.adapter._bot_username = "bot_user_id"
+        post_data = {
+            "id": "post_cwd",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id !cwd /Users/HansonYu/MyProject",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        msg = self.adapter.handle_message.call_args[0][0]
+        assert msg.message_type == MessageType.COMMAND
+        assert msg.text == "/cwd /Users/HansonYu/MyProject"
+
+    @pytest.mark.asyncio
     async def test_bare_plain_text_is_not_rewritten_as_command(self):
         """Normal conversation text must not be coerced into slash commands."""
         self.adapter._bot_username = "bot_user_id"
