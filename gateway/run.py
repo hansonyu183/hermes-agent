@@ -4219,10 +4219,15 @@ class GatewayRunner:
         context = build_session_context(source, self.config, session_entry)
         
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(
-            context,
-            session_cwd=getattr(event, "channel_cwd", "") or "",
-        )
+        try:
+            _session_env_tokens = self._set_session_env(
+                context,
+                session_cwd=getattr(event, "channel_cwd", "") or "",
+            )
+        except TypeError as exc:
+            if "session_cwd" not in str(exc):
+                raise
+            _session_env_tokens = self._set_session_env(context)
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False

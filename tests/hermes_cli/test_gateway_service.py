@@ -52,6 +52,7 @@ class TestSystemdServiceRefresh:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda auto_enable_linger=True: None)
 
         gateway_cli.systemd_start()
 
@@ -75,6 +76,7 @@ class TestSystemdServiceRefresh:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda auto_enable_linger=True: None)
 
         gateway_cli.systemd_restart()
 
@@ -278,14 +280,18 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
-    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
+    def test_launchd_restart_drains_running_gateway_via_bootout_then_start(self, monkeypatch):
         calls = []
-        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+        plist_path = Path("/tmp/ai.hermes.gateway.plist")
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
         monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
@@ -300,8 +306,9 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert calls == [
-            ("term", 321, False),
-            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
         ]
 
     def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
@@ -333,9 +340,12 @@ class TestLaunchdServiceRecovery:
         assert calls == [("self", 321), ("wait", 321, 15.0)]
         assert "service restarted" in capsys.readouterr().out.lower()
 
-    def test_launchd_restart_self_request_falls_back_to_kickstart_when_pid_does_not_change(self, monkeypatch, capsys):
+    def test_launchd_restart_self_request_falls_back_to_bootout_restart_when_pid_does_not_change(self, monkeypatch, capsys):
         calls = []
-        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+        plist_path = Path("/tmp/ai.hermes.gateway.plist")
 
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
@@ -352,6 +362,9 @@ class TestLaunchdServiceRecovery:
             "_wait_for_gateway_restart",
             lambda pid, timeout=0: calls.append(("wait", pid, timeout)) or False,
         )
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
 
         def fake_run(cmd, check=False, **kwargs):
             calls.append(cmd)
@@ -364,10 +377,12 @@ class TestLaunchdServiceRecovery:
         assert calls == [
             ("self", 321),
             ("wait", 321, 12.0),
-            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
         ]
         out = capsys.readouterr().out.lower()
-        assert "forcing launchd restart" in out
+        assert "falling back to bootout/bootstrap restart" in out
         assert "service restarted" in out
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
@@ -545,6 +560,7 @@ class TestGatewaySystemServiceRouting:
             raise AssertionError(f"Unexpected systemctl call: {cmd}")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda auto_enable_linger=True: None)
         # get_running_pid returns new PID after restart
         pid_calls = [0]
         def fake_get_pid():
@@ -598,6 +614,7 @@ class TestGatewaySystemServiceRouting:
             raise AssertionError(f"Unexpected command: {cmd}")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda auto_enable_linger=True: None)
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 999 if started["value"] else None,

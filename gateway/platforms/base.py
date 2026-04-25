@@ -1057,6 +1057,50 @@ def resolve_channel_cwd(
     return None
 
 
+def resolve_channel_skills(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> list[str] | None:
+    """Resolve auto-loaded skills for a channel/thread binding.
+
+    Prefers the exact ``channel_id`` binding first, then falls back to
+    ``parent_id`` so child threads can inherit a parent channel binding when
+    they do not define their own entry.
+    """
+    bindings = config_extra.get("channel_skill_bindings") or []
+    if not isinstance(bindings, list):
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        key = str(key)
+        for entry in bindings:
+            if not isinstance(entry, dict):
+                continue
+            entry_id = str(entry.get("id", "") or "")
+            if entry_id != key:
+                continue
+            skills = entry.get("skills")
+            if skills is None:
+                skills = entry.get("skill")
+            if isinstance(skills, str):
+                skill_name = skills.strip()
+                return [skill_name] if skill_name else None
+            if isinstance(skills, list):
+                deduped: list[str] = []
+                seen: set[str] = set()
+                for skill in skills:
+                    skill_name = str(skill).strip()
+                    if not skill_name or skill_name in seen:
+                        continue
+                    seen.add(skill_name)
+                    deduped.append(skill_name)
+                return deduped or None
+    return None
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.

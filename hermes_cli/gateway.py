@@ -2271,37 +2271,36 @@ def _wait_for_gateway_restart(previous_pid: int, timeout: float = 15.0) -> bool:
 
 def launchd_restart():
     label = get_launchd_label()
-    target = f"{_launchd_domain()}/{label}"
+    domain = _launchd_domain()
+    target = f"{domain}/{label}"
     drain_timeout = _get_restart_drain_timeout()
+    plist_path = get_launchd_plist_path()
     from gateway.status import get_running_pid
 
+    pid = get_running_pid()
+    if pid is not None and _request_gateway_self_restart(pid):
+        if _wait_for_gateway_restart(pid, timeout=drain_timeout + 5.0):
+            print("✓ Service restarted")
+            return
+        print("⚠ Service self-restart did not complete in time; falling back to bootout/bootstrap restart")
+    elif pid is not None:
+        print("↻ Gateway self-restart unavailable; using bootout/bootstrap restart")
+
+    refresh_launchd_plist_if_needed()
+
     try:
-        pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            if _wait_for_gateway_restart(pid, timeout=drain_timeout + 5.0):
-                print("✓ Service restarted")
-                return
-            print("⚠ Service self-restart did not complete in time; forcing launchd restart")
-        elif pid is not None:
-            try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
-            if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
-        print("✓ Service restarted")
+        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
     except subprocess.CalledProcessError as e:
         if e.returncode not in (3, 113):
             raise
-        # Job not loaded — bootstrap and start fresh
-        print("↻ launchd job was unloaded; reloading")
-        plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
-        print("✓ Service restarted")
+
+    exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=5.0)
+    if not exited:
+        print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — continuing with bootstrap")
+
+    subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)], check=True, timeout=30)
+    subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+    print("✓ Service restarted")
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()

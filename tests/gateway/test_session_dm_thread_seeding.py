@@ -1,17 +1,8 @@
-"""Tests for DM thread session isolation.
+"""Tests for threaded gateway session keys.
 
-DM thread sessions must start empty — no parent transcript seeding.
-Thread context is handled by platform adapters (e.g. Slack's
-_fetch_thread_context fetches actual thread replies via the API).
-Session-level seeding was removed because it copied the ENTIRE parent
-DM transcript, causing unrelated conversations to bleed across threads.
-
-Covers:
-- Thread sessions start empty (no parent seeding)
-- Group/channel thread sessions also start empty
-- Multiple threads from same parent are independent
-- Existing thread sessions are not mutated on re-access
-- Cross-platform: consistent behavior for Slack, Telegram, Discord
+DM/private chats intentionally ignore thread IDs so one private conversation
+does not fragment into multiple sessions. Group/channel threads still get their
+own session key and start empty.
 """
 
 import pytest
@@ -58,11 +49,10 @@ PARENT_HISTORY = [
 ]
 
 
-class TestDMThreadIsolation:
-    """Thread sessions must start empty — no parent transcript seeding."""
+class TestDMThreadSessionKeying:
+    """DM thread IDs must not split one private conversation."""
 
-    def test_thread_session_starts_empty(self, store):
-        """New DM thread session should NOT inherit parent's transcript."""
+    def test_thread_session_reuses_parent_dm_session(self, store):
         parent_source = _dm_source()
         parent_entry = store.get_or_create_session(parent_source)
         for msg in PARENT_HISTORY:
@@ -71,11 +61,11 @@ class TestDMThreadIsolation:
         thread_source = _dm_source(thread_id="1234567890.000001")
         thread_entry = store.get_or_create_session(thread_source)
 
-        thread_transcript = store.load_transcript(thread_entry.session_id)
-        assert len(thread_transcript) == 0
+        assert build_session_key(thread_source) == build_session_key(parent_source)
+        assert thread_entry.session_id == parent_entry.session_id
+        assert store.load_transcript(thread_entry.session_id) == PARENT_HISTORY
 
-    def test_parent_transcript_unaffected_by_thread(self, store):
-        """Creating a thread session should not alter parent's transcript."""
+    def test_thread_message_appends_to_parent_dm_session(self, store):
         parent_source = _dm_source()
         parent_entry = store.get_or_create_session(parent_source)
         for msg in PARENT_HISTORY:
@@ -88,38 +78,31 @@ class TestDMThreadIsolation:
         })
 
         parent_transcript = store.load_transcript(parent_entry.session_id)
-        assert len(parent_transcript) == 2
-        assert all(m["content"] != "thread-only message" for m in parent_transcript)
+        assert len(parent_transcript) == 3
+        assert parent_transcript[-1]["content"] == "thread-only message"
 
-    def test_multiple_threads_are_independent(self, store):
-        """Each thread from the same parent starts empty and stays independent."""
+    def test_multiple_dm_threads_share_parent_session(self, store):
         parent_source = _dm_source()
         parent_entry = store.get_or_create_session(parent_source)
         for msg in PARENT_HISTORY:
             store.append_to_transcript(parent_entry.session_id, msg)
 
-        # Thread A
         thread_a_source = _dm_source(thread_id="1111.000001")
         thread_a_entry = store.get_or_create_session(thread_a_source)
         store.append_to_transcript(thread_a_entry.session_id, {
             "role": "user", "content": "thread A message"
         })
 
-        # Thread B
         thread_b_source = _dm_source(thread_id="2222.000002")
         thread_b_entry = store.get_or_create_session(thread_b_source)
 
-        # Thread B starts empty
-        thread_b_transcript = store.load_transcript(thread_b_entry.session_id)
-        assert len(thread_b_transcript) == 0
+        assert thread_a_entry.session_id == parent_entry.session_id
+        assert thread_b_entry.session_id == parent_entry.session_id
+        transcript = store.load_transcript(thread_b_entry.session_id)
+        assert len(transcript) == 3
+        assert transcript[-1]["content"] == "thread A message"
 
-        # Thread A has only its own message
-        thread_a_transcript = store.load_transcript(thread_a_entry.session_id)
-        assert len(thread_a_transcript) == 1
-        assert thread_a_transcript[0]["content"] == "thread A message"
-
-    def test_existing_thread_session_preserved(self, store):
-        """Returning to an existing thread session should not reset it."""
+    def test_existing_dm_thread_reuses_same_parent_session(self, store):
         parent_source = _dm_source()
         parent_entry = store.get_or_create_session(parent_source)
         for msg in PARENT_HISTORY:
@@ -134,11 +117,11 @@ class TestDMThreadIsolation:
         # Get the same thread session again
         thread_entry_again = store.get_or_create_session(thread_source)
         assert thread_entry_again.session_id == thread_entry.session_id
+        assert thread_entry_again.session_id == parent_entry.session_id
 
-        # Should still have only its own message
-        thread_transcript = store.load_transcript(thread_entry_again.session_id)
-        assert len(thread_transcript) == 1
-        assert thread_transcript[0]["content"] == "follow-up"
+        transcript = store.load_transcript(thread_entry_again.session_id)
+        assert len(transcript) == 3
+        assert transcript[-1]["content"] == "follow-up"
 
 
 class TestDMThreadIsolationEdgeCases:
@@ -158,7 +141,7 @@ class TestDMThreadIsolationEdgeCases:
         assert len(thread_transcript) == 0
 
     def test_thread_without_parent_session_starts_empty(self, store):
-        """Thread session without a parent DM session should start empty."""
+        """A DM thread with no prior DM history starts empty because the DM session is new."""
         thread_source = _dm_source(thread_id="1234567890.000001")
         thread_entry = store.get_or_create_session(thread_source)
 
@@ -175,11 +158,10 @@ class TestDMThreadIsolationEdgeCases:
 
 
 class TestDMThreadIsolationCrossPlatform:
-    """Verify thread isolation is consistent across all platforms."""
+    """Verify DM thread keying is consistent across all platforms."""
 
     @pytest.mark.parametrize("platform", [Platform.SLACK, Platform.TELEGRAM, Platform.DISCORD])
-    def test_thread_starts_empty_across_platforms(self, store, platform):
-        """DM thread sessions start empty regardless of platform."""
+    def test_thread_reuses_parent_dm_session_across_platforms(self, store, platform):
         parent_source = _dm_source(platform=platform)
         parent_entry = store.get_or_create_session(parent_source)
         for msg in PARENT_HISTORY:
@@ -188,5 +170,5 @@ class TestDMThreadIsolationCrossPlatform:
         thread_source = _dm_source(platform=platform, thread_id="thread_123")
         thread_entry = store.get_or_create_session(thread_source)
 
-        thread_transcript = store.load_transcript(thread_entry.session_id)
-        assert len(thread_transcript) == 0
+        assert thread_entry.session_id == parent_entry.session_id
+        assert store.load_transcript(thread_entry.session_id) == PARENT_HISTORY

@@ -831,17 +831,24 @@ class MattermostAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
 
-        # Per-channel ephemeral prompt
-        from gateway.platforms.base import resolve_channel_cwd, resolve_channel_prompt
+        # Per-channel/thread ephemeral config and skill bindings.
+        from gateway.platforms.base import (
+            resolve_channel_cwd,
+            resolve_channel_prompt,
+            resolve_channel_skills,
+        )
+        _target_id = thread_id or channel_id
+        _parent_id = channel_id if thread_id else None
+        _skills = resolve_channel_skills(self.config.extra, _target_id, _parent_id)
         _channel_prompt = resolve_channel_prompt(
-            self.config.extra, channel_id, thread_id,
+            self.config.extra,
+            _target_id,
+            _parent_id,
         )
         _channel_cwd = resolve_channel_cwd(
-            self.config.extra, channel_id, thread_id,
-            platform=self.platform.value,
-        )
-        _channel_cwd = resolve_channel_cwd(
-            self.config.extra, channel_id, None,
+            self.config.extra,
+            _target_id,
+            _parent_id,
             platform=self.platform.value,
         )
 
@@ -853,6 +860,7 @@ class MattermostAdapter(BasePlatformAdapter):
             message_id=post_id,
             media_urls=media_urls if media_urls else None,
             media_types=media_types if media_types else None,
+            auto_skill=_skills,
             channel_prompt=_channel_prompt,
             channel_cwd=_channel_cwd,
         )

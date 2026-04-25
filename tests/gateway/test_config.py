@@ -381,6 +381,31 @@ class TestLoadGatewayConfig:
             "C01ABC": "Code review mode",
         }
 
+    def test_bridges_mattermost_channel_skill_bindings_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "mattermost:\n"
+            "  channel_skill_bindings:\n"
+            "    - id: team-channel\n"
+            "      skills:\n"
+            "        - skill-a\n"
+            "        - skill-b\n"
+            "    - id: thread-root\n"
+            "      skill: thread-skill\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.MATTERMOST].extra["channel_skill_bindings"] == [
+            {"id": "team-channel", "skills": ["skill-a", "skill-b"]},
+            {"id": "thread-root", "skill": "thread-skill"},
+        ]
+
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

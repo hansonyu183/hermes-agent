@@ -298,6 +298,43 @@ mattermost:
 
 Keys are Mattermost channel IDs (find them in the channel URL or via the API). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
+## Channel and Thread Skill Bindings
+
+Assign one or more auto-loaded skills to a specific Mattermost channel or thread. This is the Mattermost equivalent of Discord `channel_skill_bindings` and Telegram topic skill binding.
+
+```yaml
+mattermost:
+  channel_skill_bindings:
+    - id: "channel_id_abc123"
+      skills:
+        - software-development
+        - gateway-thread-routing
+    - id: "root_post_id_xyz789"
+      skill: legal-document-review
+```
+
+Behavior:
+
+- `id` can be either:
+  - a **Mattermost channel ID** to bind a whole channel
+  - a **Mattermost thread root post ID** to bind one thread only
+- `skill` loads a single skill
+- `skills` loads an ordered list of skills
+- Thread bindings win over channel bindings
+- If a thread has no explicit binding, Hermes falls back to the parent channel binding
+- Bindings only affect new sessions in that channel/thread; existing sessions already have whatever skill payload was injected when the session started
+
+Typical use cases:
+
+- Bind `software-development` only in an engineering channel
+- Bind `legal-document-review` only in one compliance thread
+- Keep the rest of Mattermost completely unchanged
+
+To find the IDs:
+
+- **Channel ID**: open the channel and inspect its details or fetch it via the Mattermost API
+- **Thread ID**: use the thread's **root post ID** (the top post that starts the thread)
+
 ## Security
 
 :::warning
