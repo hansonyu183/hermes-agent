@@ -2009,6 +2009,29 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"
 
 
+def _launchctl_bootstrap_with_retry(domain: str, plist_path: Path, *, timeout: int = 30) -> None:
+    """Bootstrap a launchd job, retrying transient macOS I/O races after bootout."""
+    import time
+
+    last_error: subprocess.CalledProcessError | None = None
+    for attempt in range(3):
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", domain, str(plist_path)],
+                check=True,
+                timeout=timeout,
+            )
+            return
+        except subprocess.CalledProcessError as e:
+            last_error = e
+            if e.returncode != 5 or attempt == 2:
+                raise
+            time.sleep(0.5 * (attempt + 1))
+
+    if last_error is not None:
+        raise last_error
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -2145,7 +2168,7 @@ def launchd_install(force: bool = False):
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
     
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+    _launchctl_bootstrap_with_retry(_launchd_domain(), plist_path)
     
     print()
     print("✓ Service installed and loaded!")
@@ -2175,7 +2198,7 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        _launchctl_bootstrap_with_retry(_launchd_domain(), plist_path)
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
         print("✓ Service started")
         return
@@ -2187,7 +2210,7 @@ def launchd_start():
         if e.returncode not in (3, 113):
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        _launchctl_bootstrap_with_retry(_launchd_domain(), plist_path)
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     print("✓ Service started")
 
@@ -2298,7 +2321,7 @@ def launchd_restart():
     if not exited:
         print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — continuing with bootstrap")
 
-    subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)], check=True, timeout=30)
+    _launchctl_bootstrap_with_retry(domain, plist_path)
     subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
     print("✓ Service restarted")
 

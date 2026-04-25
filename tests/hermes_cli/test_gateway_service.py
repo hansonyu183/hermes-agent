@@ -385,6 +385,43 @@ class TestLaunchdServiceRecovery:
         assert "falling back to bootout/bootstrap restart" in out
         assert "service restarted" in out
 
+    def test_launchd_restart_retries_transient_bootstrap_io_error(self, monkeypatch, capsys):
+        calls = []
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+        plist_path = Path("/tmp/ai.hermes.gateway.plist")
+
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 7.0)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+        bootstrap_attempts = 0
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal bootstrap_attempts
+            calls.append(cmd)
+            if cmd[:2] == ["launchctl", "bootstrap"]:
+                bootstrap_attempts += 1
+                if bootstrap_attempts == 1:
+                    raise gateway_cli.subprocess.CalledProcessError(5, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+        assert "service restarted" in capsys.readouterr().out.lower()
+
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""
         label = gateway_cli.get_launchd_label()
