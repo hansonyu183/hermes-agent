@@ -1108,13 +1108,16 @@ def resolve_outbound_thread_metadata(
     """Resolve thread routing metadata for outbound sends tied to an inbound event.
 
     Mattermost channel posts can use the inbound message id as a fallback
-    thread root before a platform-native thread id exists. DM/private chats
-    never emit thread metadata because several platforms can surface reply
-    roots in private conversations even though the desired UX is a flat DM.
-    Telegram is intentionally excluded because its thread ids are forum-topic
-    identifiers.
+    thread root before a platform-native thread id exists. Mattermost DMs use
+    an internal flat-DM marker so the adapter can ignore ``reply_to`` when
+    reply_mode=thread. Other DM/private chats never emit thread metadata
+    because several platforms can surface reply roots in private conversations
+    even though the desired UX is a flat DM. Telegram is intentionally excluded
+    because its thread ids are forum-topic identifiers.
     """
     if _is_dm_chat_type(source.chat_type):
+        if source.platform == Platform.MATTERMOST:
+            return {"chat_type": "dm"}
         return None
 
     thread_id = source.thread_id

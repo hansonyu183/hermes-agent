@@ -230,7 +230,7 @@ def test_gateway_thread_metadata_keeps_mattermost_dm_flat():
         thread_id="dm-root-post",
     )
 
-    assert _resolve_gateway_thread_metadata(source, "dm-message") is None
+    assert _resolve_gateway_thread_metadata(source, "dm-message") == {"chat_type": "dm"}
 
 
 def test_gateway_thread_metadata_uses_mattermost_channel_message_as_root():

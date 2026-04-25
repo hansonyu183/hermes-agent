@@ -325,6 +325,8 @@ class MattermostAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """Resolve the Mattermost thread root post for an outgoing message."""
+        if metadata and str(metadata.get("chat_type") or "").lower() in {"dm", "private"}:
+            return None
         thread_id = metadata.get("thread_id") if metadata else None
         if thread_id:
             return str(thread_id)
@@ -867,4 +869,3 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
-

@@ -207,6 +207,32 @@ class TestMattermostSend:
         payload = self.adapter._session.post.call_args[1]["json"]
         assert payload["root_id"] == "root_post"
 
+    @pytest.mark.asyncio
+    async def test_send_flat_dm_metadata_ignores_reply_to_in_thread_mode(self):
+        """Mattermost DMs must stay flat even when reply_mode would thread reply_to."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_dm_flat"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "dm_channel",
+            "Flat reply",
+            reply_to="dm_root_post",
+            metadata={"chat_type": "dm"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["channel_id"] == "dm_channel"
+        assert "root_id" not in payload
+
 
     @pytest.mark.asyncio
     async def test_send_with_metadata_thread_id_sets_root_id(self):
