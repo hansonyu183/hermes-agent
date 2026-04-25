@@ -1101,6 +1101,25 @@ def resolve_channel_skills(
     return None
 
 
+def resolve_outbound_thread_metadata(
+    source: SessionSource,
+    event_message_id: str | None = None,
+) -> Optional[Dict[str, str]]:
+    """Resolve thread routing metadata for outbound sends tied to an inbound event.
+
+    Mattermost channel posts and Slack DMs can use the inbound message id as a
+    fallback thread root before a platform-native thread id exists. Telegram is
+    intentionally excluded because its thread ids are forum-topic identifiers.
+    """
+    thread_id = source.thread_id
+    if not thread_id:
+        if source.platform == Platform.SLACK and _is_dm_chat_type(source.chat_type):
+            thread_id = event_message_id
+        elif source.platform == Platform.MATTERMOST and not _is_dm_chat_type(source.chat_type):
+            thread_id = event_message_id
+    return {"thread_id": thread_id} if thread_id else None
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
@@ -2255,21 +2274,8 @@ class BasePlatformAdapter(ABC):
         self,
         event: MessageEvent,
     ) -> Optional[Dict[str, str]]:
-        """Resolve thread metadata for outbound sends tied to an inbound event.
-
-        Slack DMs and Mattermost channel posts need a fallback to the inbound
-        message id so the first typing indicator / progress message / final
-        reply binds to the newly-created thread. Telegram must not receive that
-        fallback because its thread ids are forum-topic identifiers, not message
-        ids.
-        """
-        thread_id = event.source.thread_id
-        if not thread_id:
-            if event.source.platform == Platform.SLACK and _is_dm_chat_type(event.source.chat_type):
-                thread_id = event.message_id
-            elif event.source.platform == Platform.MATTERMOST and not _is_dm_chat_type(event.source.chat_type):
-                thread_id = event.message_id
-        return {"thread_id": thread_id} if thread_id else None
+        """Resolve thread routing metadata for this adapter's outbound sends."""
+        return resolve_outbound_thread_metadata(event.source, event.message_id)
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""

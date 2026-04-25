@@ -292,6 +292,7 @@ from gateway.platforms.base import (
     MessageType,
     merge_pending_message_event,
     resolve_channel_cwd,
+    resolve_outbound_thread_metadata,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -314,20 +315,8 @@ def _resolve_gateway_thread_metadata(
     source: "SessionSource",
     event_message_id: Optional[str] = None,
 ) -> Optional[Dict[str, str]]:
-    """Resolve outbound thread metadata for gateway-originated sends.
-
-    Slack DMs and Mattermost channel posts need the inbound message id as a
-    fallback so the very first typing indicator, progress update, streaming
-    delta, or interim status binds to the same new thread. Telegram must not
-    receive that fallback because its thread ids are forum-topic ids.
-    """
-    thread_id = source.thread_id
-    if not thread_id:
-        if source.platform == Platform.SLACK and _is_dm_chat_type(getattr(source, "chat_type", None)):
-            thread_id = event_message_id
-        elif source.platform == Platform.MATTERMOST and not _is_dm_chat_type(getattr(source, "chat_type", None)):
-            thread_id = event_message_id
-    return {"thread_id": thread_id} if thread_id else None
+    """Compatibility wrapper for gateway-originated thread routing metadata."""
+    return resolve_outbound_thread_metadata(source, event_message_id)
 
 
 def _approval_command_hint(platform: object | None) -> str:
