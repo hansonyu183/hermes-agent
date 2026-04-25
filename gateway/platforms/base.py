@@ -1107,15 +1107,19 @@ def resolve_outbound_thread_metadata(
 ) -> Optional[Dict[str, str]]:
     """Resolve thread routing metadata for outbound sends tied to an inbound event.
 
-    Mattermost channel posts and Slack DMs can use the inbound message id as a
-    fallback thread root before a platform-native thread id exists. Telegram is
-    intentionally excluded because its thread ids are forum-topic identifiers.
+    Mattermost channel posts can use the inbound message id as a fallback
+    thread root before a platform-native thread id exists. DM/private chats
+    never emit thread metadata because several platforms can surface reply
+    roots in private conversations even though the desired UX is a flat DM.
+    Telegram is intentionally excluded because its thread ids are forum-topic
+    identifiers.
     """
+    if _is_dm_chat_type(source.chat_type):
+        return None
+
     thread_id = source.thread_id
     if not thread_id:
-        if source.platform == Platform.SLACK and _is_dm_chat_type(source.chat_type):
-            thread_id = event_message_id
-        elif source.platform == Platform.MATTERMOST and not _is_dm_chat_type(source.chat_type):
+        if source.platform == Platform.MATTERMOST:
             thread_id = event_message_id
     return {"thread_id": thread_id} if thread_id else None
 
@@ -2114,7 +2118,7 @@ class BasePlatformAdapter(ABC):
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
-        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        thread_meta = self._resolve_outbound_thread_metadata(event)
 
         try:
             response = await self._message_handler(event)
@@ -2299,7 +2303,7 @@ class BasePlatformAdapter(ABC):
         callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        _thread_metadata = self._resolve_outbound_thread_metadata(event)
         _keep_typing_kwargs = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)
@@ -2556,7 +2560,7 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                _thread_metadata = self._resolve_outbound_thread_metadata(event)
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(

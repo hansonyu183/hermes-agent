@@ -6773,7 +6773,7 @@ class GatewayRunner:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
 
-        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        _thread_metadata = _resolve_gateway_thread_metadata(source)
 
         try:
             user_config = _load_gateway_config()
@@ -6953,7 +6953,7 @@ class GatewayRunner:
             logger.warning("No adapter for platform %s in /btw task %s", source.platform, task_id)
             return
 
-        _thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
+        _thread_meta = _resolve_gateway_thread_metadata(source)
 
         try:
             user_config = _load_gateway_config()
@@ -9387,10 +9387,7 @@ class GatewayRunner:
             else bool(_plat_streaming)
         )
 
-        if source.thread_id:
-            _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
-        else:
-            _thread_metadata = None
+        _thread_metadata: Optional[Dict[str, Any]] = _resolve_gateway_thread_metadata(source)
 
         if _streaming_enabled:
             try:
@@ -9723,15 +9720,14 @@ class GatewayRunner:
         # Accumulates tool lines into a single message that gets edited.
         #
         # Threading metadata is platform-specific:
-        # - Slack DM threading needs event_message_id fallback (reply thread)
+        # - DM/private chats stay flat even if a platform exposes reply roots
         # - Telegram uses message_thread_id only for forum topics; passing a
         #   normal DM/group message id as thread_id causes send failures
+        # - Mattermost channel posts can use event_message_id as a fallback
+        #   thread root; DM/private chats are kept flat by the shared helper
         # - Other platforms should use explicit source.thread_id only
-        if source.platform == Platform.SLACK:
-            _progress_thread_id = source.thread_id or event_message_id
-        else:
-            _progress_thread_id = source.thread_id
-        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _progress_metadata = _resolve_gateway_thread_metadata(source, event_message_id)
+        _progress_thread_id = _progress_metadata.get("thread_id") if _progress_metadata else None
 
         async def send_progress_messages():
             if not progress_queue:

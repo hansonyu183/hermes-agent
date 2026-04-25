@@ -761,10 +761,11 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Thread support: replies carry root_id; top-level channel posts should
         # use their own post id so the first bot progress/reply binds a thread
-        # instead of landing in the channel timeline.
-        thread_id = post.get("root_id") or (
-            post_id if channel_type_raw != "D" else None
-        )
+        # instead of landing in the channel timeline. DMs intentionally stay
+        # flat even if Mattermost surfaces a root_id for a DM reply.
+        thread_id = None
+        if channel_type_raw != "D":
+            thread_id = post.get("root_id") or post_id
 
         # Determine message type.
         normalized_command = _normalize_plain_text_command(message_text)
@@ -866,5 +867,4 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
-
 

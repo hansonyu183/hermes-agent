@@ -94,3 +94,44 @@ async def test_thread_binding_overrides_channel_binding(monkeypatch):
     assert event.auto_skill == ["thread-skill", "shared-skill"]
     assert event.source.chat_id == "channel-1"
     assert event.source.thread_id == "thread-1"
+
+
+@pytest.mark.asyncio
+async def test_dm_root_id_uses_dm_channel_binding_not_thread_binding(monkeypatch):
+    adapter = _make_adapter(
+        {
+            "channel_skill_bindings": [
+                {"id": "dm-channel", "skills": ["dm-skill"]},
+                {"id": "dm-root-post", "skills": ["thread-skill"]},
+            ],
+            "channel_prompts": {
+                "dm-channel": "DM prompt",
+                "dm-root-post": "Thread prompt",
+            },
+            "channel_cwds": {
+                "dm-channel": "/tmp/dm",
+                "dm-root-post": "/tmp/thread",
+            },
+        }
+    )
+    monkeypatch.setenv("MATTERMOST_REQUIRE_MENTION", "false")
+
+    await adapter._handle_ws_event(
+        _posted_event(
+            {
+                "id": "dm-reply-1",
+                "root_id": "dm-root-post",
+                "channel_id": "dm-channel",
+                "user_id": "user-1",
+                "message": "hello from dm thread ui",
+            },
+            channel_type="D",
+        )
+    )
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "dm"
+    assert event.source.thread_id is None
+    assert event.auto_skill == ["dm-skill"]
+    assert event.channel_prompt == "DM prompt"
+    assert event.channel_cwd == "/tmp/dm"

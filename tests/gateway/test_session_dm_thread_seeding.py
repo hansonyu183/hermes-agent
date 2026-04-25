@@ -160,7 +160,10 @@ class TestDMThreadIsolationEdgeCases:
 class TestDMThreadIsolationCrossPlatform:
     """Verify DM thread keying is consistent across all platforms."""
 
-    @pytest.mark.parametrize("platform", [Platform.SLACK, Platform.TELEGRAM, Platform.DISCORD])
+    @pytest.mark.parametrize(
+        "platform",
+        [Platform.SLACK, Platform.TELEGRAM, Platform.DISCORD, Platform.MATTERMOST],
+    )
     def test_thread_reuses_parent_dm_session_across_platforms(self, store, platform):
         parent_source = _dm_source(platform=platform)
         parent_entry = store.get_or_create_session(parent_source)

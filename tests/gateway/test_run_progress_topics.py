@@ -222,6 +222,43 @@ def test_gateway_thread_metadata_does_not_force_top_level_slack_channel_into_thr
     assert _resolve_gateway_thread_metadata(source, "1712345.6789") is None
 
 
+def test_gateway_thread_metadata_keeps_mattermost_dm_flat():
+    source = SessionSource(
+        platform=Platform.MATTERMOST,
+        chat_id="dm-channel",
+        chat_type="dm",
+        thread_id="dm-root-post",
+    )
+
+    assert _resolve_gateway_thread_metadata(source, "dm-message") is None
+
+
+def test_gateway_thread_metadata_uses_mattermost_channel_message_as_root():
+    source = SessionSource(
+        platform=Platform.MATTERMOST,
+        chat_id="channel-123",
+        chat_type="channel",
+        thread_id=None,
+    )
+
+    assert _resolve_gateway_thread_metadata(source, "post-root-1") == {
+        "thread_id": "post-root-1"
+    }
+
+
+def test_gateway_thread_metadata_uses_mattermost_channel_thread_root():
+    source = SessionSource(
+        platform=Platform.MATTERMOST,
+        chat_id="channel-123",
+        chat_type="channel",
+        thread_id="root-post-1",
+    )
+
+    assert _resolve_gateway_thread_metadata(source, "reply-post-1") == {
+        "thread_id": "root-post-1"
+    }
+
+
 @pytest.mark.asyncio
 async def test_base_adapter_bypass_command_keeps_mattermost_top_level_replies_in_thread():
     adapter = ProgressCaptureAdapter(platform=Platform.MATTERMOST)
@@ -381,8 +418,8 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
 
 
 @pytest.mark.asyncio
-async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
-    """Slack DM progress should keep event ts fallback threading."""
+async def test_run_agent_progress_keeps_slack_dm_flat(monkeypatch, tmp_path):
+    """DM progress should not use event message id as thread metadata."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -418,8 +455,8 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
 
     assert result["final_response"] == "done"
     assert adapter.sent
-    assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001"}
-    assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
+    assert adapter.sent[0]["metadata"] is None
+    assert all(call["metadata"] is None for call in adapter.typing)
 
 
 # ---------------------------------------------------------------------------

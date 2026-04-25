@@ -475,6 +475,31 @@ class TestMattermostWebSocketParsing:
         assert msg_event.source.chat_type == "dm"
 
     @pytest.mark.asyncio
+    async def test_dm_reply_root_id_does_not_create_thread(self):
+        """DM replies must stay flat even when Mattermost includes root_id."""
+        post_data = {
+            "id": "post_dm_reply",
+            "user_id": "user_123",
+            "channel_id": "dm_chan",
+            "message": "DM reply",
+            "root_id": "dm_root_post",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@bob",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.chat_type == "dm"
+        assert msg_event.source.thread_id is None
+
+    @pytest.mark.asyncio
     async def test_thread_id_from_root_id(self):
         """Post with root_id should have thread_id set."""
         post_data = {
