@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import sys
 import signal
 import tempfile
@@ -340,6 +341,46 @@ def _update_prompt_reply_hint(platform: object | None) -> str:
     if str(platform_value or "").lower() == "mattermost":
         return "Reply `!approve` (or `/approve`) for yes, or `!deny` (or `/deny`) for no, or type your answer directly."
     return "Reply `/approve` for yes, or `/deny` for no, or type your answer directly."
+
+
+def _launchd_manages_current_gateway_process() -> bool:
+    """Return True when launchd currently owns this gateway process."""
+    if sys.platform != "darwin":
+        return False
+
+    try:
+        from hermes_cli.gateway import get_launchd_label
+
+        result = subprocess.run(
+            ["launchctl", "list", get_launchd_label()],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (Exception, subprocess.TimeoutExpired):
+        return False
+
+    if result.returncode != 0:
+        return False
+
+    current_pid = str(os.getpid())
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if stripped == f'"PID" = {current_pid};':
+            return True
+
+        parts = stripped.split()
+        if len(parts) >= 3 and parts[0] == current_pid:
+            return True
+
+    return False
+
+
+def _is_running_under_service_manager() -> bool:
+    """Return True when gateway restart should be handed to a service manager."""
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    return _launchd_manages_current_gateway_process()
 
 
 def _canonicalize_existing_path_case(path: Path) -> Path:
@@ -5567,8 +5608,7 @@ class GatewayRunner:
         # restarts us.  The detached subprocess approach (setsid + bash)
         # doesn't work under systemd because KillMode=mixed kills all
         # processes in the cgroup, including the detached helper.
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
-        if _under_service:
+        if _is_running_under_service_manager():
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)

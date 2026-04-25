@@ -3,11 +3,13 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import gateway.run as gateway_run
+import hermes_cli.gateway as gateway_cli
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import build_session_key
@@ -69,10 +71,33 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_restart_command_uses_service_restart_under_launchd(tmp_path, monkeypatch):
+    """Under launchd, /restart exits for the service manager instead of spawning a helper."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run, "_launchd_manages_current_gateway_process", lambda: True)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
 async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
     """Without systemd, /restart uses the detached subprocess approach."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run, "_launchd_manages_current_gateway_process", lambda: False)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -87,6 +112,33 @@ async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypat
 
     await runner._handle_restart_command(event)
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+def test_launchd_service_detection_matches_current_pid(monkeypatch):
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 123)
+    monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["launchctl", "list", "ai.hermes.gateway"]
+        return SimpleNamespace(returncode=0, stdout='{\n\t"PID" = 123;\n};', stderr="")
+
+    monkeypatch.setattr(gateway_run.subprocess, "run", fake_run)
+
+    assert gateway_run._launchd_manages_current_gateway_process() is True
+
+
+def test_launchd_service_detection_ignores_other_pid(monkeypatch):
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 123)
+    monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+    monkeypatch.setattr(
+        gateway_run.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout='{\n\t"PID" = 456;\n};', stderr=""),
+    )
+
+    assert gateway_run._launchd_manages_current_gateway_process() is False
 
 
 @pytest.mark.asyncio
