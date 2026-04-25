@@ -1118,11 +1118,16 @@ def resolve_outbound_thread_metadata(
     if _is_dm_chat_type(source.chat_type):
         if source.platform == Platform.MATTERMOST:
             return {"chat_type": "dm"}
+        if source.platform == Platform.SLACK:
+            thread_id = source.thread_id or event_message_id
+            return {"thread_id": thread_id} if thread_id else None
         return None
 
     thread_id = source.thread_id
     if not thread_id:
         if source.platform == Platform.MATTERMOST:
+            thread_id = event_message_id
+        elif source.platform == Platform.SLACK:
             thread_id = event_message_id
     return {"thread_id": thread_id} if thread_id else None
 

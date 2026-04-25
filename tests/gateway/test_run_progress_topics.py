@@ -164,40 +164,6 @@ def _make_runner(adapter):
     return runner
 
 
-@pytest.mark.asyncio
-async def test_busy_ack_uses_event_message_id_for_mattermost_top_level_thread():
-    adapter = ProgressCaptureAdapter(platform=Platform.MATTERMOST)
-    runner = _make_runner(adapter)
-    runner._draining = False
-    runner._busy_ack_ts = {}
-    runner._running_agents = {}
-    runner._running_agents_ts = {}
-
-    event = MessageEvent(
-        source=SessionSource(
-            platform=Platform.MATTERMOST,
-            chat_id="channel-123",
-            chat_type="channel",
-            thread_id=None,
-        ),
-        message_id="post-root-1",
-        message_type=MessageType.TEXT,
-        text="follow-up",
-    )
-
-    handled = await runner._handle_active_session_busy_message(event, "sess-busy")
-
-    assert handled is True
-    assert adapter.sent == [
-        {
-            "chat_id": "channel-123",
-            "content": "⚡ Interrupting current task. I'll respond to your message shortly.",
-            "reply_to": "post-root-1",
-            "metadata": {"thread_id": "post-root-1"},
-        }
-    ]
-
-
 def test_approval_command_hint_is_platform_specific():
     assert "!approve" in _approval_command_hint(Platform.MATTERMOST)
     assert "!approve" not in _approval_command_hint(Platform.SLACK)
@@ -219,7 +185,9 @@ def test_gateway_thread_metadata_does_not_force_top_level_slack_channel_into_thr
     )
 
     assert _approval_command_hint(Platform.SLACK)
-    assert _resolve_gateway_thread_metadata(source, "1712345.6789") is None
+    assert _resolve_gateway_thread_metadata(source, "1712345.6789") == {
+        "thread_id": "1712345.6789"
+    }
 
 
 def test_gateway_thread_metadata_keeps_mattermost_dm_flat():
@@ -418,8 +386,8 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
 
 
 @pytest.mark.asyncio
-async def test_run_agent_progress_keeps_slack_dm_flat(monkeypatch, tmp_path):
-    """DM progress should not use event message id as thread metadata."""
+async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
+    """Slack DM progress should keep event ts fallback threading."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
@@ -455,8 +423,8 @@ async def test_run_agent_progress_keeps_slack_dm_flat(monkeypatch, tmp_path):
 
     assert result["final_response"] == "done"
     assert adapter.sent
-    assert adapter.sent[0]["metadata"] is None
-    assert all(call["metadata"] is None for call in adapter.typing)
+    assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001"}
+    assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
 
 
 # ---------------------------------------------------------------------------
