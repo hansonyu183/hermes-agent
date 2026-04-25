@@ -407,7 +407,7 @@ class TestLaunchdServiceRecovery:
             if cmd[:2] == ["launchctl", "bootstrap"]:
                 bootstrap_attempts += 1
                 if bootstrap_attempts == 1:
-                    raise gateway_cli.subprocess.CalledProcessError(5, cmd)
+                    return SimpleNamespace(returncode=5, stdout="", stderr="Bootstrap failed: 5")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)

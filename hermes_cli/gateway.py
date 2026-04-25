@@ -2014,19 +2014,28 @@ def _launchctl_bootstrap_with_retry(domain: str, plist_path: Path, *, timeout: i
     import time
 
     last_error: subprocess.CalledProcessError | None = None
+    cmd = ["launchctl", "bootstrap", domain, str(plist_path)]
     for attempt in range(3):
-        try:
-            subprocess.run(
-                ["launchctl", "bootstrap", domain, str(plist_path)],
-                check=True,
-                timeout=timeout,
-            )
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode == 0:
             return
-        except subprocess.CalledProcessError as e:
-            last_error = e
-            if e.returncode != 5 or attempt == 2:
-                raise
-            time.sleep(0.5 * (attempt + 1))
+
+        last_error = subprocess.CalledProcessError(
+            result.returncode,
+            cmd,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+        if result.returncode != 5 or attempt == 2:
+            if result.stderr:
+                print(result.stderr.strip(), file=sys.stderr)
+            raise last_error
+        time.sleep(0.5 * (attempt + 1))
 
     if last_error is not None:
         raise last_error
